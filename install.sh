@@ -18,4 +18,4 @@ curl -s -L "$SCRIPT_URL" -o "$TARGET_PATH"
 chmod +x "$TARGET_PATH"
 
 # 输出成功安装的提示
-echo "脚本已成功安装到 /usr/local/bin/domain，您现在可以通过运行 'domain' 命令来执行脚本。"
+echo "使用 'domain' 命令来完成操作。"
