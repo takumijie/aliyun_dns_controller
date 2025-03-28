@@ -51,7 +51,7 @@ install_jq() {
             return
         fi
         echo "yum 安装 jq 失败，尝试手动下载安装包..."
-        wget -O /tmp/jq.rpm http://mirror.centos.org/centos/7/updates/x86_64/Packages/jq-1.6-2.el7.x86_64.rpm
+        wget -O /tmp/jq.rpm https://archives.fedoraproject.org/pub/archive/epel/7/x86_64/Packages/j/jq-1.6-2.el7.x86_64.rpm
         if rpm -ivh /tmp/jq.rpm; then
             echo "jq 手动安装成功！"
         else
