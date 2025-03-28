@@ -7,7 +7,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 # 设置脚本的目标路径
-SCRIPT_URL="https://raw.githubusercontent.com/yourusername/yourrepository/main/domain.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/takumijie/aliyun_dns_controller/refs/heads/main/domain.sh"
 TARGET_PATH="/usr/local/bin/domain"
 
 # 下载脚本并保存到 /usr/local/bin/domain
