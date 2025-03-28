@@ -1,51 +1,59 @@
 #!/bin/bash
 
-# 配置文件路径
+# 配置文件
 CONFIG_FILE="$HOME/.aliyun_dns_config"
-
-# 函数：修改 AccessKey
-change_ak() {
-    echo "请输入新的阿里云 AccessKey 进行配置："
-    read -p "AccessKeyId: " ACCESS_KEY_ID
-    read -p "AccessKeySecret: " ACCESS_KEY_SECRET
-
-    # 保存到配置文件
-    echo "ACCESS_KEY_ID=$ACCESS_KEY_ID" > "$CONFIG_FILE"
-    echo "ACCESS_KEY_SECRET=$ACCESS_KEY_SECRET" >> "$CONFIG_FILE"
-
-    echo "新的 AccessKey 配置已保存至 $CONFIG_FILE。"
-}
-
-# 检查 AccessKey 是否已配置
-if [ ! -f "$CONFIG_FILE" ]; then
-    echo "首次运行，请输入你的阿里云 AccessKey 进行配置："
-    change_ak
-fi
-
-# 读取 AccessKey
-source "$CONFIG_FILE"
 
 # 阿里云 API 相关参数
 ENDPOINT="https://alidns.aliyuncs.com"
 API_VERSION="2015-01-09"
-FORMAT="json"
 
-# 获取当前时间戳
-timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-nonce=$RANDOM$RANDOM
+# 读取 AccessKey
+load_config() {
+    if [ -f "$CONFIG_FILE" ]; then
+        source "$CONFIG_FILE"
+    else
+        echo "首次运行，请输入你的阿里云 AccessKey 进行配置："
+        change_ak
+    fi
+}
+
+# 修改 AccessKey
+change_ak() {
+    read -p "AccessKeyId: " ACCESS_KEY_ID
+    read -p "AccessKeySecret: " ACCESS_KEY_SECRET
+
+    echo "ACCESS_KEY_ID=$ACCESS_KEY_ID" > "$CONFIG_FILE"
+    echo "ACCESS_KEY_SECRET=$ACCESS_KEY_SECRET" >> "$CONFIG_FILE"
+
+    echo "新的 AccessKey 配置已保存至 $CONFIG_FILE。"
+    load_config
+}
+
+# 计算阿里云 API 签名
+sign_request() {
+    local params="$1"
+    local sorted_params
+    sorted_params=$(echo -n "$params" | tr '&' '\n' | sort | tr '\n' '&' | sed 's/&$//')
+
+    local string_to_sign="GET&%2F&$(echo -n "$sorted_params" | jq -sRr @uri)"
+    local signature
+    signature=$(echo -n "$string_to_sign" | openssl dgst -sha1 -hmac "$ACCESS_KEY_SECRET&" -binary | base64)
+
+    echo "$params&Signature=$(echo -n "$signature" | jq -sRr @uri)"
+}
 
 # 获取账户的域名列表
 get_domains() {
     echo "正在获取您的域名列表..."
-    response=$(curl -s -X GET "$ENDPOINT" \
-        -d "Action=DescribeDomains" \
-        -d "Version=$API_VERSION" \
-        -d "AccessKeyId=$ACCESS_KEY_ID" \
-        -d "Format=$FORMAT" \
-        -d "Timestamp=$timestamp" \
-        -d "SignatureNonce=$nonce")
+    local params="AccessKeyId=$ACCESS_KEY_ID&Action=DescribeDomains&Format=json&Version=$API_VERSION&Timestamp=$(date -u +%Y-%m-%dT%H%%3A%M%%3A%SZ)&SignatureMethod=HMAC-SHA1&SignatureVersion=1.0&SignatureNonce=$RANDOM"
+    local signed_params
+    signed_params=$(sign_request "$params")
 
-    domain_list=($(echo "$response" | grep -o '"DomainName":"[^"]*' | awk -F ':"' '{print $2}'))
+    local response
+    response=$(curl -s "$ENDPOINT?$signed_params")
+
+    local domain_list
+    domain_list=($(echo "$response" | jq -r '.Domains.Domain[].DomainName'))
 
     if [ ${#domain_list[@]} -eq 0 ]; then
         echo "未能获取到您的域名，请检查 API 配置是否正确。"
@@ -69,6 +77,30 @@ get_domains() {
     done
 }
 
+# 获取 DNS 记录
+list_records() {
+    local params="AccessKeyId=$ACCESS_KEY_ID&Action=DescribeDomainRecords&DomainName=$DOMAIN&Format=json&Version=$API_VERSION&Timestamp=$(date -u +%Y-%m-%dT%H%%3A%M%%3A%SZ)&SignatureMethod=HMAC-SHA1&SignatureVersion=1.0&SignatureNonce=$RANDOM"
+    local signed_params
+    signed_params=$(sign_request "$params")
+
+    local response
+    response=$(curl -s "$ENDPOINT?$signed_params")
+
+    record_ids=($(echo "$response" | jq -r '.DomainRecords.Record[].RecordId'))
+    subdomains=($(echo "$response" | jq -r '.DomainRecords.Record[].RR'))
+    ips=($(echo "$response" | jq -r '.DomainRecords.Record[].Value'))
+
+    if [ ${#record_ids[@]} -eq 0 ]; then
+        echo "未找到解析记录。"
+        exit 1
+    fi
+
+    echo "现有的 DNS 解析记录："
+    for i in "${!record_ids[@]}"; do
+        echo "$((i+1))) ${subdomains[$i]}.$DOMAIN -> ${ips[$i]}"
+    done
+}
+
 # 绑定解析
 bind() {
     read -p "请输入要解析的子域名 (如 www): " SUBDOMAIN
@@ -87,37 +119,14 @@ bind() {
         *) echo "无效选择" && exit 1 ;;
     esac
 
-    echo "正在绑定 $SUBDOMAIN.$DOMAIN 类型: $RECORD_TYPE 到 $TARGET ..."
-    response=$(curl -s "$ENDPOINT" \
-        -d "Action=AddDomainRecord" \
-        -d "DomainName=$DOMAIN" \
-        -d "RR=$SUBDOMAIN" \
-        -d "Type=$RECORD_TYPE" \
-        -d "Value=$TARGET" \
-        -d "AccessKeyId=$ACCESS_KEY_ID")
-    echo "绑定成功: $response"
-}
+    local params="AccessKeyId=$ACCESS_KEY_ID&Action=AddDomainRecord&DomainName=$DOMAIN&RR=$SUBDOMAIN&Type=$RECORD_TYPE&Value=$TARGET&Format=json&Version=$API_VERSION&Timestamp=$(date -u +%Y-%m-%dT%H%%3A%M%%3A%SZ)&SignatureMethod=HMAC-SHA1&SignatureVersion=1.0&SignatureNonce=$RANDOM"
+    local signed_params
+    signed_params=$(sign_request "$params")
 
-# 获取 DNS 记录
-list_records() {
-    response=$(curl -s "$ENDPOINT" \
-        -d "Action=DescribeDomainRecords" \
-        -d "DomainName=$DOMAIN" \
-        -d "AccessKeyId=$ACCESS_KEY_ID")
+    local response
+    response=$(curl -s "$ENDPOINT?$signed_params")
 
-    record_ids=($(echo "$response" | grep -o '"RecordId":"[^"]*' | awk -F ':"' '{print $2}'))
-    subdomains=($(echo "$response" | grep -o '"RR":"[^"]*' | awk -F ':"' '{print $2}'))
-    ips=($(echo "$response" | grep -o '"Value":"[^"]*' | awk -F ':"' '{print $2}'))
-
-    if [ ${#record_ids[@]} -eq 0 ]; then
-        echo "未找到解析记录。"
-        exit 1
-    fi
-
-    echo "现有的 DNS 解析记录："
-    for i in "${!record_ids[@]}"; do
-        echo "$((i+1))) ${subdomains[$i]}.$DOMAIN -> ${ips[$i]}"
-    done
+    echo "绑定成功!"
 }
 
 # 解绑解析
@@ -125,12 +134,15 @@ unbind() {
     list_records
     read -p "请输入要删除的记录编号: " selection
     record_id=${record_ids[$((selection-1))]}
-    
-    response=$(curl -s "$ENDPOINT" \
-        -d "Action=DeleteDomainRecord" \
-        -d "RecordId=$record_id" \
-        -d "AccessKeyId=$ACCESS_KEY_ID")
-    echo "解绑成功: $response"
+
+    local params="AccessKeyId=$ACCESS_KEY_ID&Action=DeleteDomainRecord&RecordId=$record_id&Format=json&Version=$API_VERSION&Timestamp=$(date -u +%Y-%m-%dT%H%%3A%M%%3A%SZ)&SignatureMethod=HMAC-SHA1&SignatureVersion=1.0&SignatureNonce=$RANDOM"
+    local signed_params
+    signed_params=$(sign_request "$params")
+
+    local response
+    response=$(curl -s "$ENDPOINT?$signed_params")
+
+    echo "解绑成功!"
 }
 
 # 修改解析记录
@@ -140,17 +152,18 @@ update_record() {
     record_id=${record_ids[$((selection-1))]}
     read -p "请输入新的解析值: " new_value
 
-    response=$(curl -s "$ENDPOINT" \
-        -d "Action=UpdateDomainRecord" \
-        -d "RecordId=$record_id" \
-        -d "RR=${subdomains[$((selection-1))]}" \
-        -d "Type=A" \
-        -d "Value=$new_value" \
-        -d "AccessKeyId=$ACCESS_KEY_ID")
-    echo "修改成功: $response"
+    local params="AccessKeyId=$ACCESS_KEY_ID&Action=UpdateDomainRecord&RecordId=$record_id&RR=${subdomains[$((selection-1))]}&Type=A&Value=$new_value&Format=json&Version=$API_VERSION&Timestamp=$(date -u +%Y-%m-%dT%H%%3A%M%%3A%SZ)&SignatureMethod=HMAC-SHA1&SignatureVersion=1.0&SignatureNonce=$RANDOM"
+    local signed_params
+    signed_params=$(sign_request "$params")
+
+    local response
+    response=$(curl -s "$ENDPOINT?$signed_params")
+
+    echo "修改成功!"
 }
 
 # 选择操作
+load_config
 echo "请选择操作:"
 echo "1) 绑定 (bind)"
 echo "2) 解绑 (unbind)"
